@@ -33,6 +33,7 @@ from rich.console import Console
 from rich.syntax import Syntax
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
+import pandas as pd
 
 from lean_interact import (
     AutoLeanServer,
@@ -74,6 +75,39 @@ def load_minif2f_dataset(split: Literal["train", "validation", "test"] = "valida
         )
     return processed_dataset
 
+def load_rhim_dataset(split: Literal["train", "validation", "test"] = "validation") -> list[dict]:
+    """
+    Loade RHIM dataset
+    """
+    # outputs is a list of strings
+    data = pd.read_excel('/content/data_multi_agents200.xlsx')
+    accepted_answers = data['AcceptedAnswer'].tolist()
+    problems = data['Content'].tolist()
+    
+    dataset = list()
+    for row in data.itertuples():
+        dataset.append(
+            {
+                "id": row.Index,
+                "header": "",
+                "formal": "",
+                "natural": row.Content,
+                "nl_proof": row.AcceptedAnswer,
+            }
+        )
+    
+    processed_dataset = []
+    for item in dataset:
+        processed_dataset.append(
+            {
+                "id": item["id"],
+                "header": "",
+                "formal": clean_last_theorem_string(item["formal"]) + " :=",
+                "natural": item["natural"],
+                "nl_proof": None,
+            },
+        )
+    return processed_dataset
 
 def load_proofnetsharp_dataset(split: Literal["valid", "test"] = "valid") -> list[dict]:
     """
@@ -237,6 +271,8 @@ def run_proof_generation_pipeline(
         dataset = load_minif2f_dataset(split)  # type: ignore
     elif dataset_name == "proofnetsharp":
         dataset = load_proofnetsharp_dataset(split)  # type: ignore
+    elif dataset_name == "rhim":
+        dataset = load_rhim_dataset(split)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
     console.print(f"Loaded {len(dataset)} theorems")
@@ -246,10 +282,22 @@ def run_proof_generation_pipeline(
     theorem_ids = []
     for i, theorem_data in enumerate(dataset):
         prompt = (
-            f"Complete the following Lean 4 code:\n\n```lean4\n{theorem_data['header']}\n\n{theorem_data['formal']} by"
+            f"""
+Convert the following proof for the above problem into lean4 proof - which is an formalized programming language used to verify the proof:
+{theorem_data['nl_proof']}
+
+Your answer should follow the format:
+###BEGIN_OF_FORMAT###
+```lean4
+<your lean4 code is in here>
+```
+###END_OF_FORMAT###
+
+You have to write lean4 code follow lemma-based style.
+"""
         )
-        if use_nl_proof_hint and theorem_data["nl_proof"] is not None:
-            prompt += "\n" + indent_code(f"/-\n{theorem_data['nl_proof']}\n-/")
+#        if use_nl_proof_hint and theorem_data["nl_proof"] is not None:
+#            prompt += "\n" + indent_code(f"/-\n{theorem_data['nl_proof']}\n-/")
         prompts.append(prompt)
         theorem_ids.append(i)
 
@@ -360,27 +408,27 @@ def default_goedelprover() -> dict:
         "caching": True,
     }
 
+def default_goedelproverv2() -> dict: 
+    return {
+        "model": "Goedel-LM/Goedel-Prover-V2",
+        "custom_llm_provider": "vllm",
+        "temperature": 1.0,
+        "max_tokens": 4096,
+        "n": 32,
+        "top_p": 0.95,
+        "stop": ["```"],
+        "caching": True,
+    }
 
 if __name__ == "__main__":
     ## For DeepSeek Prover V1.5 and Goedel Prover, make sure to run this script on a GPU with at least 24GB of VRAM.
 
-    gen_config = default_goedelprover()
-
-    # MiniF2F benchmark
-    run_proof_generation_pipeline(
-        dataset_name="minif2f",
+    gen_config = default_goedelproverv2()
+    
+    run_proof_generation_pipeline( 
+        dataset_name="rhim",
         split="validation",
         use_nl_proof_hint=False,
-        gen_config=gen_config,
-        lean_version="v4.8.0",
-        verbose=True,
-    )
-
-    # ProofNet# benchmark
-    run_proof_generation_pipeline(
-        dataset_name="proofnetsharp",
-        split="valid",
-        use_nl_proof_hint=False,  # Set to True for proof autoformalization (only available for ProofNet#)
         gen_config=gen_config,
         lean_version="v4.8.0",
         verbose=True,
